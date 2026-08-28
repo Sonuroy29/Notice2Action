@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useId } from "react";
+import React, { useState, useRef, useEffect, useId, ChangeEvent } from "react";
 import { Extraction, Evidence } from "@/types/extraction";
 
 const MAX_CHAR_LIMIT = 50000;
+const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
 interface AnalyzeSuccessResponse {
   success: true;
@@ -19,6 +21,15 @@ type AnalyzeApiResponse = AnalyzeSuccessResponse | AnalyzeErrorResponse;
 
 function isObject(val: unknown): val is Record<string, unknown> {
   return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+
+function formatBytes(bytes: number, decimals = 1): string {
+  if (bytes === 0) return "0 Bytes";
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ["Bytes", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }
 
 // ==========================================
@@ -97,14 +108,30 @@ function EvidenceDisclosure({ evidence }: { evidence: Evidence | null | undefine
 }
 
 export default function HomePage() {
-  const [activeTab, setActiveTab] = useState<"file" | "text">("text");
+  const [activeTab, setActiveTab] = useState<"text" | "pdf" | "image">("text");
   const [noticeText, setNoticeText] = useState("");
+  const [selectedPdf, setSelectedPdf] = useState<File | null>(null);
+  const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [extractionResult, setExtractionResult] = useState<Extraction | null>(null);
 
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // Revoke image preview object URL on unmount or file replacement
+  useEffect(() => {
+    return () => {
+      if (imagePreviewUrl) {
+        URL.revokeObjectURL(imagePreviewUrl);
+      }
+    };
+  }, [imagePreviewUrl]);
+
+  // Cleanup abort controller on unmount
   useEffect(() => {
     return () => {
       if (abortControllerRef.current) {
@@ -114,20 +141,118 @@ export default function HomePage() {
     };
   }, []);
 
+  const handlePdfChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    setErrorMessage(null);
+
+    if (!file) return;
+
+    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      setErrorMessage("Please select a valid PDF file (.pdf).");
+      e.target.value = "";
+      setSelectedPdf(null);
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      setErrorMessage(`PDF file size exceeds the ${MAX_FILE_SIZE_MB}MB limit.`);
+      e.target.value = "";
+      setSelectedPdf(null);
+      return;
+    }
+
+    setSelectedPdf(file);
+  };
+
+  const handleRemovePdf = () => {
+    setSelectedPdf(null);
+    if (pdfInputRef.current) {
+      pdfInputRef.current.value = "";
+    }
+    setErrorMessage(null);
+  };
+
+  const handleImageChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    setErrorMessage(null);
+
+    if (!file) return;
+
+    const validTypes = ["image/png", "image/jpeg", "image/jpg", "image/webp"];
+    if (!validTypes.includes(file.type)) {
+      setErrorMessage("Please select a valid image file (.png, .jpg, .jpeg, .webp).");
+      e.target.value = "";
+      setSelectedImage(null);
+      if (imagePreviewUrl) {
+        URL.revokeObjectURL(imagePreviewUrl);
+        setImagePreviewUrl(null);
+      }
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      setErrorMessage(`Image file size exceeds the ${MAX_FILE_SIZE_MB}MB limit.`);
+      e.target.value = "";
+      setSelectedImage(null);
+      if (imagePreviewUrl) {
+        URL.revokeObjectURL(imagePreviewUrl);
+        setImagePreviewUrl(null);
+      }
+      return;
+    }
+
+    if (imagePreviewUrl) {
+      URL.revokeObjectURL(imagePreviewUrl);
+    }
+
+    setSelectedImage(file);
+    setImagePreviewUrl(URL.createObjectURL(file));
+  };
+
+  const handleRemoveImage = () => {
+    setSelectedImage(null);
+    if (imagePreviewUrl) {
+      URL.revokeObjectURL(imagePreviewUrl);
+      setImagePreviewUrl(null);
+    }
+    if (imageInputRef.current) {
+      imageInputRef.current.value = "";
+    }
+    setErrorMessage(null);
+  };
+
+  const handleTabChange = (tab: "text" | "pdf" | "image") => {
+    setActiveTab(tab);
+    setErrorMessage(null);
+  };
+
   const handleAnalyze = async () => {
-    const trimmedText = noticeText.trim();
-    if (!trimmedText) {
-      setErrorMessage("Please enter or paste notice text to analyze.");
-      return;
+    // 1. Client-side input validation
+    if (activeTab === "text") {
+      const trimmedText = noticeText.trim();
+      if (!trimmedText) {
+        setErrorMessage("Please enter or paste notice text to analyze.");
+        return;
+      }
+      if (noticeText.length > MAX_CHAR_LIMIT) {
+        setErrorMessage(
+          `Notice text exceeds the maximum allowed limit of ${MAX_CHAR_LIMIT.toLocaleString()} characters.`
+        );
+        return;
+      }
+    } else if (activeTab === "pdf") {
+      if (!selectedPdf) {
+        setErrorMessage("Please choose a PDF file to analyze.");
+        return;
+      }
+    } else if (activeTab === "image") {
+      if (!selectedImage) {
+        setErrorMessage("Please choose an image to analyze.");
+        return;
+      }
     }
 
-    if (noticeText.length > MAX_CHAR_LIMIT) {
-      setErrorMessage(
-        `Notice text exceeds the maximum allowed limit of ${MAX_CHAR_LIMIT.toLocaleString()} characters.`
-      );
-      return;
-    }
-
+    // 2. Abort previous pending request
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
@@ -141,15 +266,29 @@ export default function HomePage() {
 
     try {
       let response: Response;
+
+      // 3. Build appropriate request payload
       try {
-        response = await fetch("/api/analyze", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ text: noticeText }),
-          signal: controller.signal,
-        });
+        if (activeTab === "text") {
+          response = await fetch("/api/analyze", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ text: noticeText }),
+            signal: controller.signal,
+          });
+        } else {
+          const formData = new FormData();
+          formData.append("inputType", activeTab);
+          formData.append("file", activeTab === "pdf" ? (selectedPdf as Blob) : (selectedImage as Blob));
+
+          response = await fetch("/api/analyze", {
+            method: "POST",
+            body: formData,
+            signal: controller.signal,
+          });
+        }
       } catch (fetchErr: unknown) {
         if (fetchErr instanceof DOMException && fetchErr.name === "AbortError") {
           return;
@@ -297,40 +436,56 @@ export default function HomePage() {
         {/* 3. INPUT CARD */}
         <section id="upload-section" className="pb-12 px-4 sm:px-6 lg:px-8 max-w-4xl mx-auto">
           <div className="bg-white border border-slate-200 rounded-2xl shadow-xl shadow-slate-200/50 p-6 sm:p-8">
-            <div className="flex border-b border-slate-200 mb-6" role="tablist" aria-label="Input Method">
+            <div className="flex border-b border-slate-200 mb-6 gap-6" role="tablist" aria-label="Notice Input Method">
               <button
                 type="button"
                 role="tab"
                 aria-selected={activeTab === "text"}
                 aria-controls="panel-text"
                 id="tab-text"
-                onClick={() => setActiveTab("text")}
-                className={`pb-3 text-sm font-semibold border-b-2 transition-colors mr-6 focus-visible:outline-2 focus-visible:outline-blue-600 focus-visible:outline-offset-4 cursor-pointer ${
+                onClick={() => handleTabChange("text")}
+                className={`pb-3 text-sm font-semibold border-b-2 transition-colors focus-visible:outline-2 focus-visible:outline-blue-600 focus-visible:outline-offset-4 cursor-pointer ${
                   activeTab === "text"
                     ? "border-blue-600 text-blue-600"
                     : "border-transparent text-slate-500 hover:text-slate-800"
                 }`}
               >
-                Paste notice text
+                Paste Text
               </button>
               <button
                 type="button"
                 role="tab"
-                aria-selected={activeTab === "file"}
-                aria-controls="panel-file"
-                id="tab-file"
-                onClick={() => setActiveTab("file")}
+                aria-selected={activeTab === "pdf"}
+                aria-controls="panel-pdf"
+                id="tab-pdf"
+                onClick={() => handleTabChange("pdf")}
                 className={`pb-3 text-sm font-semibold border-b-2 transition-colors focus-visible:outline-2 focus-visible:outline-blue-600 focus-visible:outline-offset-4 cursor-pointer ${
-                  activeTab === "file"
+                  activeTab === "pdf"
                     ? "border-blue-600 text-blue-600"
                     : "border-transparent text-slate-500 hover:text-slate-800"
                 }`}
               >
-                Upload File (Coming Soon)
+                Upload PDF
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "image"}
+                aria-controls="panel-image"
+                id="tab-image"
+                onClick={() => handleTabChange("image")}
+                className={`pb-3 text-sm font-semibold border-b-2 transition-colors focus-visible:outline-2 focus-visible:outline-blue-600 focus-visible:outline-offset-4 cursor-pointer ${
+                  activeTab === "image"
+                    ? "border-blue-600 text-blue-600"
+                    : "border-transparent text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                Upload Image
               </button>
             </div>
 
-            {activeTab === "text" ? (
+            {/* TAB PANEL 1: PASTE TEXT */}
+            {activeTab === "text" && (
               <div id="panel-text" role="tabpanel" aria-labelledby="tab-text" className="space-y-4">
                 <div className="flex items-center justify-between">
                   <label htmlFor="notice-raw-text" className="block text-sm font-medium text-slate-700">
@@ -359,7 +514,7 @@ export default function HomePage() {
                 />
 
                 {errorMessage && (
-                  <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-sm text-rose-700">
+                  <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-sm text-rose-700" role="alert">
                     <span className="font-semibold">Error: </span>
                     {errorMessage}
                   </div>
@@ -379,23 +534,162 @@ export default function HomePage() {
                   </button>
                 </div>
               </div>
-            ) : (
-              <div
-                id="panel-file"
-                role="tabpanel"
-                aria-labelledby="tab-file"
-                className="border border-slate-200 bg-slate-50/70 rounded-xl p-8 text-center flex flex-col items-center justify-center select-none"
-              >
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="text-xs font-semibold px-2.5 py-1 bg-slate-200 text-slate-500 rounded-md">PDF</span>
-                  <span className="text-xs font-semibold px-2.5 py-1 bg-slate-200 text-slate-500 rounded-md">Image</span>
+            )}
+
+            {/* TAB PANEL 2: UPLOAD PDF */}
+            {activeTab === "pdf" && (
+              <div id="panel-pdf" role="tabpanel" aria-labelledby="tab-pdf" className="space-y-4">
+                <input
+                  type="file"
+                  id="pdf-file-upload"
+                  ref={pdfInputRef}
+                  accept="application/pdf,.pdf"
+                  onChange={handlePdfChange}
+                  className="sr-only"
+                  disabled={isLoading}
+                />
+
+                {!selectedPdf ? (
+                  <label
+                    htmlFor="pdf-file-upload"
+                    className="border-2 border-dashed border-slate-300 hover:border-blue-500 bg-slate-50 hover:bg-blue-50/30 transition-all rounded-xl p-8 text-center flex flex-col items-center justify-center cursor-pointer focus-within:ring-2 focus-within:ring-blue-600 focus-within:outline-none"
+                  >
+                    <span className="w-10 h-10 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xs mb-3">
+                      PDF
+                    </span>
+                    <p className="text-sm font-semibold text-slate-800">
+                      Click to choose a PDF document
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Official notices, circulars, or schedules up to {MAX_FILE_SIZE_MB}MB
+                    </p>
+                  </label>
+                ) : (
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="px-2.5 py-1 bg-rose-100 text-rose-700 font-bold text-xs rounded uppercase shrink-0">
+                        PDF
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-800 truncate" title={selectedPdf.name}>
+                          {selectedPdf.name}
+                        </p>
+                        <p className="text-xs text-slate-500">{formatBytes(selectedPdf.size)}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRemovePdf}
+                      disabled={isLoading}
+                      className="text-xs font-semibold text-rose-600 hover:text-rose-700 focus-visible:outline-2 focus-visible:outline-rose-600 rounded px-2 py-1 transition-colors shrink-0 cursor-pointer disabled:opacity-50"
+                      aria-label="Remove selected PDF"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                )}
+
+                {errorMessage && (
+                  <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-sm text-rose-700" role="alert">
+                    <span className="font-semibold">Error: </span>
+                    {errorMessage}
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
+                  <span className="text-xs text-slate-400">
+                    Maximum document size: {MAX_FILE_SIZE_MB} MB
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleAnalyze}
+                    disabled={isLoading || !selectedPdf}
+                    className="w-full sm:w-auto px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg shadow-sm focus-visible:outline-2 focus-visible:outline-blue-600 focus-visible:outline-offset-2 transition-all cursor-pointer"
+                  >
+                    {isLoading ? "Analyzing PDF..." : "Analyze PDF"}
+                  </button>
                 </div>
-                <p className="text-sm font-semibold text-slate-700">
-                  File upload is currently in development
-                </p>
-                <p className="text-xs text-slate-500 mt-1 max-w-sm">
-                  Direct document and image parsing will be available in an upcoming release. Please use the &quot;Paste notice text&quot; tab to analyze notices.
-                </p>
+              </div>
+            )}
+
+            {/* TAB PANEL 3: UPLOAD IMAGE */}
+            {activeTab === "image" && (
+              <div id="panel-image" role="tabpanel" aria-labelledby="tab-image" className="space-y-4">
+                <input
+                  type="file"
+                  id="image-file-upload"
+                  ref={imageInputRef}
+                  accept="image/png,image/jpeg,image/jpg,image/webp,.png,.jpg,.jpeg,.webp"
+                  onChange={handleImageChange}
+                  className="sr-only"
+                  disabled={isLoading}
+                />
+
+                {!selectedImage ? (
+                  <label
+                    htmlFor="image-file-upload"
+                    className="border-2 border-dashed border-slate-300 hover:border-blue-500 bg-slate-50 hover:bg-blue-50/30 transition-all rounded-xl p-8 text-center flex flex-col items-center justify-center cursor-pointer focus-within:ring-2 focus-within:ring-blue-600 focus-within:outline-none"
+                  >
+                    <span className="w-10 h-10 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xs mb-3">
+                      IMG
+                    </span>
+                    <p className="text-sm font-semibold text-slate-800">
+                      Click to choose a notice screenshot or photo
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      PNG, JPG, or WEBP up to {MAX_FILE_SIZE_MB}MB
+                    </p>
+                  </label>
+                ) : (
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                    <div className="flex items-center gap-3 min-w-0">
+                      {imagePreviewUrl && (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img
+                          src={imagePreviewUrl}
+                          alt={`Preview of uploaded notice: ${selectedImage.name}`}
+                          className="w-14 h-14 object-cover rounded-lg border border-slate-200 shrink-0 bg-white"
+                        />
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-800 truncate" title={selectedImage.name}>
+                          {selectedImage.name}
+                        </p>
+                        <p className="text-xs text-slate-500">{formatBytes(selectedImage.size)}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRemoveImage}
+                      disabled={isLoading}
+                      className="text-xs font-semibold text-rose-600 hover:text-rose-700 focus-visible:outline-2 focus-visible:outline-rose-600 rounded px-2 py-1 transition-colors shrink-0 cursor-pointer disabled:opacity-50"
+                      aria-label="Remove selected image"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                )}
+
+                {errorMessage && (
+                  <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-sm text-rose-700" role="alert">
+                    <span className="font-semibold">Error: </span>
+                    {errorMessage}
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
+                  <span className="text-xs text-slate-400">
+                    Maximum image size: {MAX_FILE_SIZE_MB} MB
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleAnalyze}
+                    disabled={isLoading || !selectedImage}
+                    className="w-full sm:w-auto px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg shadow-sm focus-visible:outline-2 focus-visible:outline-blue-600 focus-visible:outline-offset-2 transition-all cursor-pointer"
+                  >
+                    {isLoading ? "Analyzing Image..." : "Analyze Image"}
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -557,7 +851,7 @@ export default function HomePage() {
               </div>
             )}
 
-            {/* Warnings Section (if present) */}
+            {/* Warnings Section */}
             {(extractionResult.warnings ?? []).length > 0 && (
               <div className="bg-rose-50/70 border border-rose-200 rounded-2xl p-6 sm:p-8">
                 <h3 className="text-lg font-bold text-rose-950 mb-1">
@@ -681,7 +975,7 @@ export default function HomePage() {
               </div>
             </div>
 
-            {/* Procedure Section (if available) */}
+            {/* Procedure Section */}
             {extractionResult.procedure?.available && (extractionResult.procedure.steps ?? []).length > 0 && (
               <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 shadow-sm">
                 <h3 className="text-lg font-bold text-slate-900 mb-4">Step-by-Step Procedure</h3>
@@ -702,7 +996,7 @@ export default function HomePage() {
               </div>
             )}
 
-            {/* Contacts Section (if present) */}
+            {/* Contacts Section */}
             {(extractionResult.contacts ?? []).length > 0 && (
               <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 shadow-sm">
                 <h3 className="text-lg font-bold text-slate-900 mb-4">Contact Information</h3>
